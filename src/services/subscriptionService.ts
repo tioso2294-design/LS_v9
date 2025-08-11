@@ -357,51 +357,27 @@ export class SubscriptionService {
     restaurant_name?: string;
   })[]> {
     try {
-      // Get all subscriptions without joins first
-      const { data: subscriptions, error: subscriptionsError } = await supabase
-        .from('subscriptions')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (subscriptionsError) throw subscriptionsError;
+      // Use the database function to get recent subscriptions with proper joins
+      const { data, error } = await supabase.rpc('get_recent_subscriptions', { limit_count: 100 });
       
-      if (!subscriptions || subscriptions.length === 0) {
-        return [];
-      }
-
-      const userIds = subscriptions.map(s => s.user_id);
-      
-      // Get user emails from auth.users via RPC function
-      const { data: users, error: usersError } = await supabase
-        .rpc('get_user_emails', { user_ids: userIds });
-
-      if (usersError) {
-        console.warn('Could not fetch user emails via RPC:', usersError);
-      }
-      
-      // Get restaurant names
-      const { data: restaurants, error: restaurantsError } = await supabase
-        .from('restaurants')
-        .select('id, name, owner_id')
-        .in('owner_id', userIds);
-
-      if (restaurantsError) {
-        console.warn('Could not fetch restaurants:', restaurantsError);
-      }
-
-      // Combine the data
-      const enrichedSubscriptions = subscriptions.map(subscription => {
-        const user = users?.find((u: any) => u.id === subscription.user_id);
-        const restaurant = restaurants?.find(r => r.owner_id === subscription.user_id);
+      if (error) {
+        console.error('Error fetching subscriptions via RPC:', error);
+        // Fallback to basic query without joins
+        const { data: basicSubs, error: basicError } = await supabase
+          .from('subscriptions')
+          .select('*')
+          .order('created_at', { ascending: false });
+          
+        if (basicError) throw basicError;
         
-        return {
-          ...subscription,
-          user_email: user?.email,
-          restaurant_name: restaurant?.name
-        };
-      });
-
-      return enrichedSubscriptions;
+        return (basicSubs || []).map(sub => ({
+          ...sub,
+          user_email: 'Unknown',
+          restaurant_name: 'Unknown Restaurant'
+        }));
+      }
+      
+      return data || [];
     } catch (error: any) {
       console.error('Error fetching all subscriptions:', error);
       return [];
@@ -417,38 +393,45 @@ export class SubscriptionService {
     churnRate: number;
   }> {
     try {
-      const { data: subscriptions, error } = await supabase
-        .from('subscriptions')
-        .select('plan_type, status, created_at');
+      // Use the database function for accurate statistics
+      const { data, error } = await supabase.rpc('get_subscription_statistics');
+      
+      if (error) {
+        console.error('Error fetching subscription stats via RPC:', error);
+        // Fallback to basic calculation
+        const { data: subscriptions, error: basicError } = await supabase
+          .from('subscriptions')
+          .select('plan_type, status');
 
-      if (error) throw error;
+        if (basicError) throw basicError;
 
-      const total = subscriptions?.length || 0;
-      const active = subscriptions?.filter(s => s.status === 'active').length || 0;
-      const trial = subscriptions?.filter(s => s.plan_type === 'trial').length || 0;
-      const paid = subscriptions?.filter(s => s.plan_type !== 'trial').length || 0;
+        const total = subscriptions?.length || 0;
+        const active = subscriptions?.filter(s => s.status === 'active').length || 0;
+        const trial = subscriptions?.filter(s => s.plan_type === 'trial').length || 0;
+        const paid = subscriptions?.filter(s => s.plan_type !== 'trial' && s.status === 'active').length || 0;
+        const cancelled = subscriptions?.filter(s => s.status === 'cancelled').length || 0;
+        
+        const revenue = subscriptions?.reduce((sum, sub) => {
+          if (sub.status === 'active') {
+            if (sub.plan_type === 'monthly') return sum + 2.99;
+            if (sub.plan_type === 'semiannual') return sum + 9.99 / 6; // Monthly equivalent
+            if (sub.plan_type === 'annual') return sum + 19.99 / 12; // Monthly equivalent
+          }
+          return sum;
+        }, 0) || 0;
+        
+        const churnRate = total > 0 ? (cancelled / total) * 100 : 0;
 
-      // Calculate actual revenue based on plan types
-      const revenue = subscriptions?.reduce((sum, sub) => {
-        if (sub.status === 'active') {
-          if (sub.plan_type === 'monthly') return sum + 2.99;
-          if (sub.plan_type === 'semiannual') return sum + 9.99;
-          if (sub.plan_type === 'annual') return sum + 19.99;
-        }
-        return sum;
-      }, 0) || 0;
-
-      // Calculate churn rate (simplified)
-      const cancelled = subscriptions?.filter(s => s.status === 'cancelled').length || 0;
-      const churnRate = total > 0 ? (cancelled / total) * 100 : 0;
-
+        return { total, active, trial, paid, revenue, churnRate };
+      }
+      
       return {
-        total,
-        active,
-        trial,
-        paid,
-        revenue,
-        churnRate
+        total: data.total || 0,
+        active: data.active || 0,
+        trial: data.trial || 0,
+        paid: data.paid || 0,
+        revenue: data.monthlyRevenue || 0,
+        churnRate: data.churnRate || 0
       };
     } catch (error: any) {
       console.error('Error fetching subscription stats:', error);
@@ -471,49 +454,33 @@ export class SubscriptionService {
     monthlyGrowth: number;
   }> {
     try {
-      // Get all restaurants count
-      const { count: restaurantCount, error: restaurantsError } = await supabase
-        .from('restaurants')
-        .select('*', { count: 'exact', head: true });
-
-      if (restaurantsError) throw restaurantsError;
-
-      // Get all customers across all restaurants
-      const { data: customers, error: customersError } = await supabase
-        .from('customers')
-        .select('total_spent, created_at');
-
-      if (customersError) throw customersError;
-
-      // Get all transactions across all restaurants
-      const { count: transactionCount, error: transactionsError } = await supabase
-        .from('transactions')
-        .select('*', { count: 'exact', head: true });
-
-      if (transactionsError) throw transactionsError;
-
-      // Calculate metrics
-      const totalRevenue = customers?.reduce((sum, c) => sum + parseFloat(c.total_spent?.toString() || '0'), 0) || 0;
-      const totalCustomers = customers?.length || 0;
-      const totalRestaurants = restaurantCount || 0;
-      const totalTransactions = transactionCount || 0;
-
-      // Calculate monthly growth
-      const lastMonth = new Date();
-      lastMonth.setMonth(lastMonth.getMonth() - 1);
+      // Use the database function for comprehensive system stats
+      const { data, error } = await supabase.rpc('get_system_wide_stats');
       
-      const newCustomersThisMonth = customers?.filter(c => 
-        new Date(c.created_at) > lastMonth
-      ).length || 0;
+      if (error) {
+        console.error('Error fetching system stats via RPC:', error);
+        // Fallback to basic queries
+        const [restaurantCount, customerCount, transactionCount] = await Promise.all([
+          supabase.from('restaurants').select('*', { count: 'exact', head: true }),
+          supabase.from('customers').select('*', { count: 'exact', head: true }),
+          supabase.from('transactions').select('*', { count: 'exact', head: true })
+        ]);
+        
+        return {
+          totalRevenue: 0,
+          totalCustomers: customerCount.count || 0,
+          totalRestaurants: restaurantCount.count || 0,
+          totalTransactions: transactionCount.count || 0,
+          monthlyGrowth: 0
+        };
+      }
       
-      const monthlyGrowth = totalCustomers > 0 ? (newCustomersThisMonth / totalCustomers) * 100 : 0;
-
       return {
-        totalRevenue,
-        totalCustomers,
-        totalRestaurants,
-        totalTransactions,
-        monthlyGrowth
+        totalRevenue: data.totalRevenue || 0,
+        totalCustomers: data.totalCustomers || 0,
+        totalRestaurants: data.totalRestaurants || 0,
+        totalTransactions: data.totalTransactions || 0,
+        monthlyGrowth: 0 // Can be calculated from the data if needed
       };
     } catch (error: any) {
       console.error('Error fetching system-wide stats:', error);
