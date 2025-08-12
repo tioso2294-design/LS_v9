@@ -290,10 +290,20 @@ const BillingPage: React.FC = () => {
               <div className="flex items-center justify-between">
                 <span className="text-gray-600">Next Billing</span>
                 <span className="font-semibold text-gray-900">
-                  {subscription.subscription.current_period_end 
-                    ? new Date(subscription.subscription.current_period_end).toLocaleDateString()
-                    : 'N/A'
-                  }
+                  {(() => {
+                    if (!subscription.subscription.current_period_end) return 'N/A';
+                    
+                    const planType = subscription.subscription.plan_type;
+                    if (planType === 'trial') {
+                      return new Date(subscription.subscription.current_period_end).toLocaleDateString();
+                    } else if (planType === 'semiannual') {
+                      return 'One-time payment (6 months)';
+                    } else if (planType === 'annual') {
+                      return 'One-time payment (1 year)';
+                    } else {
+                      return new Date(subscription.subscription.current_period_end).toLocaleDateString();
+                    }
+                  })()}
                 </span>
               </div>
 
@@ -301,7 +311,16 @@ const BillingPage: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <span className="text-gray-600">Days Remaining</span>
                   <span className={`font-semibold ${subscription.daysRemaining <= 7 ? 'text-red-600' : 'text-gray-900'}`}>
-                    {subscription.daysRemaining} days
+                    {(() => {
+                      const planType = subscription.subscription.plan_type;
+                      if (planType === 'semiannual') {
+                        return `${subscription.daysRemaining} days (6-month plan)`;
+                      } else if (planType === 'annual') {
+                        return `${subscription.daysRemaining} days (annual plan)`;
+                      } else {
+                        return `${subscription.daysRemaining} days`;
+                      }
+                    })()}
                   </span>
                 </div>
               )}
@@ -487,41 +506,19 @@ const BillingPage: React.FC = () => {
               </div>
             </div>
 
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-gray-600">Branches</span>
-                <span className="text-sm font-medium text-gray-900">
-                  {subscription?.features?.maxBranches === -1 ? 'Unlimited' : `0 / ${subscription?.features?.maxBranches || 0}`}
-                </span>
-              </div>
-              <div className="w-full bg-gray-200 rounded-full h-2">
-                <div className="bg-gradient-to-r from-[#E6A85C] to-[#E85A9B] h-2 rounded-full" style={{ width: '10%' }} />
-              </div>
-            </div>
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">Customers</span>
+            <span className="text-sm font-medium text-gray-900">
+              {subscription?.features?.maxCustomers === -1 ? 'Unlimited' : `0 / ${subscription?.features?.maxCustomers || 0}`}
+            </span>
           </div>
 
-          <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-600" />
-              <span className="text-sm text-gray-700">Advanced Analytics</span>
-              {!subscription?.features?.advancedAnalytics && (
-                <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">Upgrade Required</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-600" />
-              <span className="text-sm text-gray-700">Priority Support</span>
-              {!subscription?.features?.prioritySupport && (
-                <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">Upgrade Required</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <CheckCircle className="h-4 w-4 text-green-600" />
-              <span className="text-sm text-gray-700">API Access</span>
-              {!subscription?.features?.apiAccess && (
-                <span className="px-2 py-1 bg-gray-100 text-gray-600 text-xs rounded-full">Upgrade Required</span>
-              )}
-            </div>
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600">Branches</span>
+            <span className="text-sm font-medium text-gray-900">
+              {subscription?.features?.maxBranches === -1 ? 'Unlimited' : `0 / ${subscription?.features?.maxBranches || 0}`}
+            </span>
           </div>
         </div>
 

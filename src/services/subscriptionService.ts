@@ -393,7 +393,7 @@ export class SubscriptionService {
     churnRate: number;
   }> {
     try {
-      // Use the database function for accurate statistics
+      // Use the updated database function for accurate statistics
       const { data, error } = await supabase.rpc('get_subscription_statistics');
       
       if (error) {
@@ -411,18 +411,19 @@ export class SubscriptionService {
         const paid = subscriptions?.filter(s => s.plan_type !== 'trial' && s.status === 'active').length || 0;
         const cancelled = subscriptions?.filter(s => s.status === 'cancelled').length || 0;
         
-        const revenue = subscriptions?.reduce((sum, sub) => {
-          if (sub.status === 'active') {
+        // Calculate TOTAL revenue generated (not monthly recurring)
+        const totalRevenue = subscriptions?.reduce((sum, sub) => {
+          if (sub.status === 'active' || sub.status === 'expired') {
             if (sub.plan_type === 'monthly') return sum + 2.99;
-            if (sub.plan_type === 'semiannual') return sum + 9.99 / 6; // Monthly equivalent
-            if (sub.plan_type === 'annual') return sum + 19.99 / 12; // Monthly equivalent
+            if (sub.plan_type === 'semiannual') return sum + 9.99;
+            if (sub.plan_type === 'annual') return sum + 19.99;
           }
           return sum;
         }, 0) || 0;
         
         const churnRate = total > 0 ? (cancelled / total) * 100 : 0;
 
-        return { total, active, trial, paid, revenue, churnRate };
+        return { total, active, trial, paid, revenue: totalRevenue, churnRate };
       }
       
       return {
@@ -430,7 +431,7 @@ export class SubscriptionService {
         active: data.active || 0,
         trial: data.trial || 0,
         paid: data.paid || 0,
-        revenue: data.monthlyRevenue || 0,
+        revenue: data.totalRevenue || 0, // Now using total revenue instead of monthly
         churnRate: data.churnRate || 0
       };
     } catch (error: any) {
