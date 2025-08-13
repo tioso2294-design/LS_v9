@@ -104,8 +104,19 @@ const currentPlan = plans.find(p => p.planId === selectedPlan);
 
   const handlePaymentSuccess = async () => {
     setShowCheckout(false);
-    await loadCurrentSubscription();
-    navigate('/dashboard?payment=success');
+    
+    // Trigger subscription update event for seamless refresh
+    window.dispatchEvent(new CustomEvent('subscription-updated'));
+    
+    // Navigate back to dashboard with success indicator
+    navigate('/dashboard', { 
+      state: { paymentSuccess: true }
+    });
+    
+    // Refresh subscription data after navigation
+    setTimeout(() => {
+      loadCurrentSubscription();
+    }, 1000);
   };
 
   const handlePaymentCancel = () => {

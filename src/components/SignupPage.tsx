@@ -9,6 +9,7 @@ import {
 import { loadStripe } from '@stripe/stripe-js';
 import { useAuth } from '../contexts/AuthContext';
 import { supabase } from '../lib/supabase';
+import CustomCheckout from './CustomCheckout';
 
 // Initialize Stripe
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || 'pk_test_placeholder');
@@ -42,6 +43,7 @@ const SignupPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+  const [showCustomCheckout, setShowCustomCheckout] = useState(false);
 
   const plans: Record<string, PlanDetails> = {
     trial: {
@@ -164,8 +166,8 @@ const SignupPage: React.FC = () => {
           }
         });
       } else {
-        // For paid plans, redirect to Stripe checkout
-        await handleStripeCheckout();
+        // For paid plans, show custom checkout
+        setShowCustomCheckout(true);
       }
     } catch (err: any) {
       setError('Failed to complete signup. Please try signing in if your account was created.');
@@ -174,71 +176,31 @@ const SignupPage: React.FC = () => {
     }
   };
 
-  const handleStripeCheckout = async () => {
-    try {
-      // Wait a moment for auth state to settle
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Get fresh session
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      
-      if (sessionError || !session?.access_token) {
-        console.error('Session error:', sessionError);
-        throw new Error('Please wait a moment and try again. Your account is being set up.');
+  const handlePaymentSuccess = () => {
+    navigate('/login', { 
+      state: { 
+        message: 'Payment successful! Please sign in to access your account.',
+        email: formData.email
       }
+    });
+  };
 
-      // Create Stripe checkout session
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-checkout-session`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${session.access_token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          planType: selectedPlan,
-          autoRenew,
-          successUrl: `${window.location.origin}/login?payment=success&email=${encodeURIComponent(formData.email)}`,
-          cancelUrl: `${window.location.origin}/signup?payment=cancelled`
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        if (errorData.error?.includes('Price ID not configured')) {
-          throw new Error('Payment system is not fully configured. Please contact support or try the free trial.');
-        }
-        throw new Error(errorData.error || 'Payment processing temporarily unavailable. Please try again.');
-      }
-
-      const { sessionId } = await response.json();
-      
-      // Redirect to Stripe Checkout
-      const stripe = await stripePromise;
-      if (!stripe) {
-        throw new Error('Stripe failed to load');
-      }
-
-      const { error: stripeError } = await stripe.redirectToCheckout({
-        sessionId
-      });
-
-      if (stripeError) {
-        throw new Error(stripeError.message);
-      }
-
-    } catch (err: any) {
-      console.error('Stripe checkout error:', err);
-      if (err.message?.includes('account is being set up')) {
-        setError('Your account is being set up. Please wait a moment and try again.');
-      } else if (err.message?.includes('Payment system is not fully configured')) {
-        setError('Payment system is being configured. Please try the free trial for now.');
-      } else {
-        setError(err.message || 'Payment processing temporarily unavailable. Please try again or contact support.');
-      }
-    }
+  const handlePaymentCancel = () => {
+    setShowCustomCheckout(false);
   };
 
   const currentPlan = plans[selectedPlan];
+
+  if (showCustomCheckout) {
+    return (
+      <CustomCheckout
+        plan={currentPlan}
+        autoRenew={autoRenew}
+        onSuccess={handlePaymentSuccess}
+        onCancel={handlePaymentCancel}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-50 via-white to-gray-50 font-['Inter',sans-serif]">
