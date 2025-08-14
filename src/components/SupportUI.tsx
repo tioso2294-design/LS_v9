@@ -43,13 +43,26 @@ const SupportUI: React.FC = () => {
       const subscription = SupportService.subscribeToMessages(
         selectedTicket.id,
         (payload) => {
-          if (payload.eventType === 'INSERT') {
-            setMessages(prev => [...prev, payload.new]);
+          console.log('📨 Real-time message update:', payload);
+          if (payload.eventType === 'INSERT' && payload.new) {
+            setMessages(prev => {
+              // Avoid duplicates
+              const exists = prev.some(msg => msg.id === payload.new.id);
+              if (exists) return prev;
+              return [...prev, payload.new];
+            });
+          } else if (payload.eventType === 'UPDATE' && payload.new) {
+            setMessages(prev => prev.map(msg => 
+              msg.id === payload.new.id ? payload.new : msg
+            ));
+          } else if (payload.eventType === 'DELETE' && payload.old) {
+            setMessages(prev => prev.filter(msg => msg.id !== payload.old.id));
           }
         }
       );
 
       return () => {
+        console.log('🔌 Unsubscribing from messages for ticket:', selectedTicket.id);
         subscription.unsubscribe();
       };
     }

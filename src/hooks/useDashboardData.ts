@@ -5,6 +5,10 @@ import { SubscriptionService } from '../services/subscriptionService';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 
+// Cache for dashboard data with timestamps
+const dataCache = new Map<string, { data: any; timestamp: number }>();
+const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes
+
 interface DashboardStats {
   name: string;
   value: string;
@@ -77,6 +81,29 @@ export const useDashboardData = (timeRange: string = '7d') => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { user, restaurant } = useAuth();
+
+  // Check if we should use cached data
+  const shouldUseCachedData = (cacheKey: string) => {
+    const cached = dataCache.get(cacheKey);
+    if (!cached) return false;
+    
+    const now = Date.now();
+    return (now - cached.timestamp) < CACHE_DURATION;
+  };
+
+  // Store data in cache
+  const setCachedData = (cacheKey: string, data: any) => {
+    dataCache.set(cacheKey, {
+      data,
+      timestamp: Date.now()
+    });
+  };
+
+  // Get cached data
+  const getCachedData = (cacheKey: string) => {
+    const cached = dataCache.get(cacheKey);
+    return cached?.data;
+  };
 
   const currentUser = {
     name: user?.user_metadata?.first_name && user?.user_metadata?.last_name 
@@ -316,8 +343,26 @@ export const useDashboardData = (timeRange: string = '7d') => {
   };
 
   const fetchDashboardData = useCallback(async () => {
-    // Add a small delay to ensure proper animation timing
-    await new Promise(resolve => setTimeout(resolve, 100));
+    if (!user) return;
+    
+    const cacheKey = `dashboard-${restaurant?.id || 'no-restaurant'}-${timeRange}`;
+    
+    // Check if we should use cached data
+    if (shouldUseCachedData(cacheKey)) {
+      const cachedData = getCachedData(cacheKey);
+      if (cachedData) {
+        setStats(cachedData.stats);
+        setRecentActivity(cachedData.recentActivity);
+        setCustomerGrowthData(cachedData.customerGrowthData);
+        setRewardDistribution(cachedData.rewardDistribution);
+        setWeeklyActivity(cachedData.weeklyActivity);
+        setLoyaltyROI(cachedData.loyaltyROI);
+        setMonthlyTrends(cachedData.monthlyTrends);
+        setNotifications(cachedData.notifications);
+        setLoading(false);
+        return;
+      }
+    }
     
     try {
       setLoading(true);
@@ -455,6 +500,18 @@ export const useDashboardData = (timeRange: string = '7d') => {
       setRecentActivity(activityData);
       setNotifications([]);
 
+      // Cache the data
+      setCachedData(cacheKey, {
+        stats: dashboardStats,
+        recentActivity: activityData,
+        customerGrowthData: growthData,
+        rewardDistribution: distributionData,
+        weeklyActivity: [],
+        loyaltyROI: roiData,
+        monthlyTrends: trendsData,
+        notifications: []
+      });
+
     } catch (err: any) {
       console.error('Error fetching dashboard data:', err);
       setError(err.message || 'Failed to load dashboard data');
@@ -484,9 +541,24 @@ export const useDashboardData = (timeRange: string = '7d') => {
   }, [user]);
 
   useEffect(() => {
-    // Only fetch data if we have a user (restaurant can be null)
-    if (user) {
+    // Only fetch data if we have a user and no valid cache
+    const cacheKey = `dashboard-${restaurant?.id || 'no-restaurant'}-${timeRange}`;
+    if (user && !shouldUseCachedData(cacheKey)) {
       fetchDashboardData();
+    } else if (user && shouldUseCachedData(cacheKey)) {
+      // Load from cache immediately
+      const cachedData = getCachedData(cacheKey);
+      if (cachedData) {
+        setStats(cachedData.stats);
+        setRecentActivity(cachedData.recentActivity);
+        setCustomerGrowthData(cachedData.customerGrowthData);
+        setRewardDistribution(cachedData.rewardDistribution);
+        setWeeklyActivity(cachedData.weeklyActivity);
+        setLoyaltyROI(cachedData.loyaltyROI);
+        setMonthlyTrends(cachedData.monthlyTrends);
+        setNotifications(cachedData.notifications);
+        setLoading(false);
+      }
     }
   }, [user, restaurant, timeRange, fetchDashboardData]);
 

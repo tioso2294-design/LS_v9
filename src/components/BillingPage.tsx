@@ -43,6 +43,7 @@ const BillingPage: React.FC = () => {
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [showAddPaymentModal, setShowAddPaymentModal] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
+  const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
   
   const { user } = useAuth();
 
@@ -179,27 +180,37 @@ const BillingPage: React.FC = () => {
 
   const handleAddPaymentMethod = async () => {
     try {
+      setAddingPaymentMethod(true);
       setActionLoading('add-payment');
       
-      // In a real implementation, you would:
-      // 1. Create a Stripe Setup Intent
-      // 2. Collect payment method details
-      // 3. Attach to customer
-      
-      // For demo, add a mock payment method
-      const newPaymentMethod: PaymentMethod = {
-        id: `pm_${Date.now()}`,
-        type: 'card',
-        card: {
-          brand: 'mastercard',
-          last4: '1234',
-          exp_month: 6,
-          exp_year: 2026
+      if (!subscription?.subscription?.stripe_customer_id) {
+        throw new Error('No Stripe customer found');
+      }
+
+      // Create a setup intent for adding payment method
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/create-setup-intent`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
         },
-        is_default: false
-      };
+        body: JSON.stringify({
+          customerId: subscription.subscription.stripe_customer_id
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to create setup intent');
+      }
+
+      const { setupIntent } = await response.json();
       
-      setPaymentMethods(prev => [...prev, newPaymentMethod]);
+      // In a real implementation, you would use Stripe Elements here
+      // For now, we'll simulate adding a payment method
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Refresh payment methods
+      await loadBillingData();
       setShowAddPaymentModal(false);
       
     } catch (err: any) {
@@ -215,8 +226,24 @@ const BillingPage: React.FC = () => {
     try {
       setActionLoading(`remove-${paymentMethodId}`);
       
-      // In production, call Stripe API to detach payment method
-      setPaymentMethods(prev => prev.filter(pm => pm.id !== paymentMethodId));
+      // Call backend to detach payment method
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/detach-payment-method`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          paymentMethodId
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to remove payment method');
+      }
+
+      // Refresh payment methods
+      await loadBillingData();
       
     } catch (err: any) {
       setError(err.message || 'Failed to remove payment method');
@@ -229,11 +256,25 @@ const BillingPage: React.FC = () => {
     try {
       setActionLoading(`default-${paymentMethodId}`);
       
-      // In production, update default payment method in Stripe
-      setPaymentMethods(prev => prev.map(pm => ({
-        ...pm,
-        is_default: pm.id === paymentMethodId
-      })));
+      // Call backend to set default payment method
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/set-default-payment-method`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          paymentMethodId,
+          customerId: subscription?.subscription?.stripe_customer_id
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to set default payment method');
+      }
+
+      // Refresh payment methods
+      await loadBillingData();
       
     } catch (err: any) {
       setError(err.message || 'Failed to set default payment method');
@@ -283,32 +324,37 @@ const BillingPage: React.FC = () => {
     
     const plan = subscription.subscription.plan_type;
     const endDate = subscription.subscription.current_period_end;
+    const startDate = subscription.subscription.current_period_start;
     
     switch (plan) {
       case 'annual':
         return { 
           text: 'One-time payment (1 year)', 
           isOneTime: true,
-          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A'
+          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
+          isExpired: endDate ? new Date(endDate) < new Date() : false
         };
       case 'semiannual':
         return { 
           text: 'One-time payment (6 months)', 
           isOneTime: true,
-          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A'
+          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
+          isExpired: endDate ? new Date(endDate) < new Date() : false
         };
       case 'monthly':
         return { 
           text: endDate ? new Date(endDate).toLocaleDateString() : 'N/A', 
-          isOneTime: false 
+          isOneTime: false,
+          isExpired: endDate ? new Date(endDate) < new Date() : false
         };
       case 'trial':
         return { 
           text: endDate ? new Date(endDate).toLocaleDateString() : 'N/A', 
-          isOneTime: false 
+          isOneTime: false,
+          isExpired: endDate ? new Date(endDate) < new Date() : false
         };
       default:
-        return { text: 'N/A', isOneTime: false };
+        return { text: 'N/A', isOneTime: false, isExpired: false };
     }
   };
 
@@ -324,18 +370,23 @@ const BillingPage: React.FC = () => {
     const start = new Date(startDate).toLocaleDateString();
     const end = new Date(endDate).toLocaleDateString();
     
-    switch (plan) {
-      case 'annual':
-        return `${start} - ${end} (1 year)`;
-      case 'semiannual':
-        return `${start} - ${end} (6 months)`;
-      case 'monthly':
-        return `${start} - ${end} (1 month)`;
-      case 'trial':
-        return `${start} - ${end} (trial)`;
-      default:
-        return `${start} - ${end}`;
+    // Calculate actual duration
+    const startTime = new Date(startDate).getTime();
+    const endTime = new Date(endDate).getTime();
+    const durationDays = Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24));
+    
+    let periodLabel = '';
+    if (durationDays >= 350) {
+      periodLabel = '1 year';
+    } else if (durationDays >= 150) {
+      periodLabel = '6 months';
+    } else if (durationDays >= 25) {
+      periodLabel = '1 month';
+    } else {
+      periodLabel = 'trial';
     }
+    
+    return `${start} - ${end} (${periodLabel})`;
   };
 
   if (loading) {
@@ -425,7 +476,7 @@ const BillingPage: React.FC = () => {
                   <span className="text-gray-600">Days Remaining</span>
                   <span className={`font-semibold ${subscription.daysRemaining <= 7 ? 'text-red-600' : 'text-gray-900'}`}>
                     {subscription.daysRemaining} days
-                    {nextBillingInfo.isOneTime && (
+                    {(subscription.subscription.plan_type === 'annual' || subscription.subscription.plan_type === 'semiannual') && (
                       <span className="text-xs text-gray-500 ml-1">
                         ({subscription.subscription.plan_type} plan)
                       </span>
@@ -657,6 +708,13 @@ const BillingPage: React.FC = () => {
                 {subscription?.features?.maxBranches > 1 ? 'Included' : 'Not Available'}
               </span>
             </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Custom Branding</span>
+              <span className={`font-semibold ${subscription?.features?.customBranding ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.features?.customBranding ? 'Included' : 'Not Available'}
+              </span>
+            </div>
           </div>
 
           <div className="space-y-4">
@@ -674,17 +732,18 @@ const BillingPage: React.FC = () => {
               </span>
             </div>
 
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Custom Branding</span>
-              <span className={`text-sm font-medium ${subscription?.features?.customBranding ? 'text-green-600' : 'text-gray-400'}`}>
-                {subscription?.features?.customBranding ? 'Included' : 'Not Available'}
-              </span>
-            </div>
 
             <div className="flex items-center justify-between">
               <span className="text-sm text-gray-600">API Access</span>
               <span className={`text-sm font-medium ${subscription?.features?.apiAccess ? 'text-green-600' : 'text-gray-400'}`}>
                 {subscription?.features?.apiAccess ? 'Included' : 'Not Available'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">White-Label Solution</span>
+              <span className={`font-semibold ${subscription?.subscription?.plan_type === 'annual' ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.subscription?.plan_type === 'annual' ? 'Included' : 'Not Available'}
               </span>
             </div>
           </div>
