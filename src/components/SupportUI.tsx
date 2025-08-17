@@ -40,16 +40,18 @@ const SupportUI: React.FC = () => {
       fetchMessages();
       
       // Subscribe to real-time message updates
-      const subscription = SupportService.subscribeToMessages(
+      const messageSubscription = SupportService.subscribeToMessages(
         selectedTicket.id,
         (payload) => {
-          console.log('📨 Real-time message update:', payload);
+          console.log('📨 Real-time message update for ticket:', selectedTicket.id, payload);
           if (payload.eventType === 'INSERT' && payload.new) {
             setMessages(prev => {
               // Avoid duplicates
               const exists = prev.some(msg => msg.id === payload.new.id);
               if (exists) return prev;
-              return [...prev, payload.new];
+              return [...prev, payload.new].sort((a, b) => 
+                new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+              );
             });
           } else if (payload.eventType === 'UPDATE' && payload.new) {
             setMessages(prev => prev.map(msg => 
@@ -63,7 +65,7 @@ const SupportUI: React.FC = () => {
 
       return () => {
         console.log('🔌 Unsubscribing from messages for ticket:', selectedTicket.id);
-        subscription.unsubscribe();
+        messageSubscription.unsubscribe();
       };
     }
   }, [selectedTicket]);
@@ -143,7 +145,7 @@ const SupportUI: React.FC = () => {
       });
 
       setNewMessage('');
-      await fetchMessages();
+      // Don't manually fetch messages - real-time subscription will handle it
     } catch (error) {
       console.error('Error sending message:', error);
       alert('Failed to send message');

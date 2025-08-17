@@ -46,21 +46,6 @@ export default function DashboardLayout() {
     return () => window.removeEventListener('subscription-updated', handleSubscriptionUpdate);
   }, []);
 
-  // Check for payment success in URL and refresh subscription
-  React.useEffect(() => {
-    const urlParams = new URLSearchParams(window.location.search);
-    if (urlParams.get('payment') === 'success') {
-      console.log('🎉 Payment success detected, refreshing subscription...');
-      // Clean up URL immediately to prevent re-triggering
-      window.history.replaceState({}, '', window.location.pathname);
-      
-      // Trigger subscription refresh with delay to ensure backend processing
-      setTimeout(() => {
-        checkSubscription();
-        window.dispatchEvent(new CustomEvent('subscription-updated'));
-      }, 1500);
-    }
-  }, []);
 
   const checkSubscription = async () => {
     if (!user) return;

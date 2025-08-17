@@ -70,8 +70,8 @@ const SubscriptionGuard: React.FC<SubscriptionGuardProps> = ({ children, require
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-[#E6A85C] border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-gray-600">Getting things ready for you...</p>
-          <p className="text-sm text-gray-500 mt-1">✨ Almost there!</p>
+          <p className="text-gray-600">Preparing your workspace...</p>
+          <p className="text-sm text-gray-500 mt-1">🚀 Loading your dashboard magic!</p>
         </div>
       </div>
     );

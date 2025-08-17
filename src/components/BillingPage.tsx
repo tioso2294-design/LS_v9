@@ -54,6 +54,12 @@ const BillingPage: React.FC = () => {
       setLoading(true);
       const subscriptionData = await SubscriptionService.checkSubscriptionAccess(user.id);
       setSubscription(subscriptionData);
+      
+      // Load payment methods if we have a Stripe customer
+      if (subscriptionData?.subscription?.stripe_customer_id) {
+        await loadPaymentMethods(subscriptionData.subscription.stripe_customer_id);
+        await loadInvoices(subscriptionData.subscription);
+      }
     } catch (error) {
       console.error('Error fetching subscription:', error);
     } finally {
@@ -61,75 +67,47 @@ const BillingPage: React.FC = () => {
     }
   };
 
-  const loadBillingData = async () => {
-    if (!user) return;
-
+  const loadPaymentMethods = async (customerId: string) => {
     try {
-      setLoading(true);
-      setError('');
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/get-payment-methods`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ customerId })
+      });
 
-      // Load fresh subscription data
-      const subscriptionData = await SubscriptionService.checkSubscriptionAccess(user.id);
-      console.log('💳 Loaded subscription data:', subscriptionData);
-      setSubscription(subscriptionData);
-
-      // Load payment methods and invoices
-      if (subscriptionData?.subscription?.stripe_customer_id) {
-        try {
-          // Mock payment methods for demo - in production, call your backend
-          setPaymentMethods([
-            {
-              id: 'pm_default',
-              type: 'card',
-              card: {
-                brand: 'visa',
-                last4: '4242',
-                exp_month: 12,
-                exp_year: 2025
-              },
-              is_default: true
-            }
-          ]);
-
-          // Create invoice based on subscription
-          const planAmounts: Record<string, number> = {
-            monthly: 299,
-            semiannual: 999,
-            annual: 1999,
-            trial: 0
-          };
-
-          const amount = planAmounts[subscriptionData.subscription.plan_type] || 0;
-          
-          if (amount > 0) {
-            setInvoices([
-              {
-                id: `in_${subscriptionData.subscription.id.slice(-10)}`,
-                amount,
-                status: 'paid',
-                created: Math.floor(new Date(subscriptionData.subscription.current_period_start).getTime() / 1000),
-                period_start: Math.floor(new Date(subscriptionData.subscription.current_period_start).getTime() / 1000),
-                period_end: Math.floor(new Date(subscriptionData.subscription.current_period_end).getTime() / 1000)
-              }
-            ]);
-          } else {
-            setInvoices([]);
-          }
-        } catch (stripeError) {
-          console.warn('Could not load Stripe data:', stripeError);
-          setPaymentMethods([]);
-          setInvoices([]);
-        }
-      } else {
-        setPaymentMethods([]);
-        setInvoices([]);
+      if (response.ok) {
+        const { paymentMethods } = await response.json();
+        setPaymentMethods(paymentMethods || []);
       }
+    } catch (error) {
+      console.error('Error loading payment methods:', error);
+      setPaymentMethods([]);
+    }
+  };
 
-    } catch (err: any) {
-      console.error('Error loading billing data:', err);
-      setError('Failed to load billing information');
-    } finally {
-      setLoading(false);
+  const loadInvoices = async (subscriptionData: any) => {
+    try {
+      if (!subscriptionData?.stripe_customer_id) return;
+
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/get-invoices`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ customerId: subscriptionData.stripe_customer_id })
+      });
+
+      if (response.ok) {
+        const { invoices } = await response.json();
+        setInvoices(invoices || []);
+      }
+    } catch (error) {
+      console.error('Error loading invoices:', error);
+      setInvoices([]);
     }
   };
 
@@ -148,28 +126,33 @@ const BillingPage: React.FC = () => {
     return () => window.removeEventListener('subscription-updated', handleSubscriptionUpdate);
   }, []);
 
-  useEffect(() => {
-    if (user) {
-      loadBillingData();
-    }
-  }, [user]);
-
   const handleCancelSubscription = async () => {
-    if (!subscription?.subscription?.id) return;
+    if (!subscription?.subscription?.id || !user) return;
 
     try {
       setActionLoading('cancel');
       
-      // Update subscription status to cancelled in our database
-      await SubscriptionService.updateSubscriptionStatus(subscription.subscription.id, 'cancelled');
+      // Call the graceful cancellation function
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cancel-subscription`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userId: user.id,
+          reason: cancelReason
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to cancel subscription');
+      }
       
       // Refresh subscription data
-      await loadBillingData();
+      await fetchSubscriptionData();
       setShowCancelModal(false);
       setCancelReason('');
-      
-      // Show success message
-      alert('Subscription cancelled successfully. You will retain access until the end of your billing period.');
       
     } catch (err: any) {
       setError(err.message || 'Failed to cancel subscription');
@@ -178,9 +161,36 @@ const BillingPage: React.FC = () => {
     }
   };
 
+  const handleReactivateSubscription = async () => {
+    if (!user) return;
+
+    try {
+      setActionLoading('reactivate');
+      
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/reactivate-subscription`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ userId: user.id })
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to reactivate subscription');
+      }
+      
+      await fetchSubscriptionData();
+      
+    } catch (err: any) {
+      setError(err.message || 'Failed to reactivate subscription');
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
   const handleAddPaymentMethod = async () => {
     try {
-      setAddingPaymentMethod(true);
       setActionLoading('add-payment');
       
       if (!subscription?.subscription?.stripe_customer_id) {
@@ -205,12 +215,17 @@ const BillingPage: React.FC = () => {
 
       const { setupIntent } = await response.json();
       
-      // In a real implementation, you would use Stripe Elements here
-      // For now, we'll simulate adding a payment method
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      // In production, you would redirect to Stripe's hosted setup page or use Elements
+      const stripe = await stripePromise;
+      if (stripe && setupIntent.client_secret) {
+        const { error } = await stripe.confirmCardSetup(setupIntent.client_secret);
+        if (error) {
+          throw new Error(error.message);
+        }
+      }
       
       // Refresh payment methods
-      await loadBillingData();
+      await loadPaymentMethods(subscription.subscription.stripe_customer_id);
       setShowAddPaymentModal(false);
       
     } catch (err: any) {
@@ -226,16 +241,13 @@ const BillingPage: React.FC = () => {
     try {
       setActionLoading(`remove-${paymentMethodId}`);
       
-      // Call backend to detach payment method
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/detach-payment-method`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          paymentMethodId
-        })
+        body: JSON.stringify({ paymentMethodId })
       });
 
       if (!response.ok) {
@@ -243,7 +255,9 @@ const BillingPage: React.FC = () => {
       }
 
       // Refresh payment methods
-      await loadBillingData();
+      if (subscription?.subscription?.stripe_customer_id) {
+        await loadPaymentMethods(subscription.subscription.stripe_customer_id);
+      }
       
     } catch (err: any) {
       setError(err.message || 'Failed to remove payment method');
@@ -256,7 +270,6 @@ const BillingPage: React.FC = () => {
     try {
       setActionLoading(`default-${paymentMethodId}`);
       
-      // Call backend to set default payment method
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/set-default-payment-method`, {
         method: 'POST',
         headers: {
@@ -274,7 +287,9 @@ const BillingPage: React.FC = () => {
       }
 
       // Refresh payment methods
-      await loadBillingData();
+      if (subscription?.subscription?.stripe_customer_id) {
+        await loadPaymentMethods(subscription.subscription.stripe_customer_id);
+      }
       
     } catch (err: any) {
       setError(err.message || 'Failed to set default payment method');
@@ -326,6 +341,36 @@ const BillingPage: React.FC = () => {
     const endDate = subscription.subscription.current_period_end;
     const startDate = subscription.subscription.current_period_start;
     
+    // Calculate actual duration
+    if (startDate && endDate) {
+      const startTime = new Date(startDate).getTime();
+      const endTime = new Date(endDate).getTime();
+      const durationDays = Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24));
+      
+      if (durationDays >= 350) {
+        return { 
+          text: 'One-time payment (1 year)', 
+          isOneTime: true,
+          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
+          isExpired: endDate ? new Date(endDate) < new Date() : false
+        };
+      } else if (durationDays >= 150) {
+        return { 
+          text: 'One-time payment (6 months)', 
+          isOneTime: true,
+          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
+          isExpired: endDate ? new Date(endDate) < new Date() : false
+        };
+      } else if (durationDays >= 25) {
+        return { 
+          text: endDate ? new Date(endDate).toLocaleDateString() : 'N/A', 
+          isOneTime: false,
+          isExpired: endDate ? new Date(endDate) < new Date() : false
+        };
+      }
+    }
+    
+    // Fallback to plan type
     switch (plan) {
       case 'annual':
         return { 
@@ -361,7 +406,6 @@ const BillingPage: React.FC = () => {
   const getBillingPeriodText = () => {
     if (!subscription?.subscription) return 'N/A';
     
-    const plan = subscription.subscription.plan_type;
     const startDate = subscription.subscription.current_period_start;
     const endDate = subscription.subscription.current_period_end;
     
@@ -412,7 +456,7 @@ const BillingPage: React.FC = () => {
           <p className="text-gray-600 mt-1">Manage your subscription and payment methods</p>
         </div>
         <button
-          onClick={loadBillingData}
+          onClick={fetchSubscriptionData}
           className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
         >
           <RefreshCw className="h-5 w-5" />
@@ -423,6 +467,12 @@ const BillingPage: React.FC = () => {
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl flex items-center gap-3">
           <AlertCircle className="h-5 w-5" />
           {error}
+          <button 
+            onClick={() => setError('')}
+            className="ml-auto p-1 hover:bg-red-100 rounded"
+          >
+            <X className="h-4 w-4" />
+          </button>
         </div>
       )}
 
@@ -476,35 +526,43 @@ const BillingPage: React.FC = () => {
                   <span className="text-gray-600">Days Remaining</span>
                   <span className={`font-semibold ${subscription.daysRemaining <= 7 ? 'text-red-600' : 'text-gray-900'}`}>
                     {subscription.daysRemaining} days
-                    {(subscription.subscription.plan_type === 'annual' || subscription.subscription.plan_type === 'semiannual') && (
-                      <span className="text-xs text-gray-500 ml-1">
-                        ({subscription.subscription.plan_type} plan)
-                      </span>
-                    )}
                   </span>
                 </div>
               )}
 
-              {subscription.subscription.plan_type !== 'trial' && subscription.subscription.status !== 'cancelled' && (
-                <div className="pt-4 border-t border-gray-200">
+              {/* Subscription Actions */}
+              <div className="pt-4 border-t border-gray-200 space-y-3">
+                {subscription.subscription.status === 'cancelled' ? (
+                  <div className="space-y-3">
+                    <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                      <p className="text-yellow-800 text-sm font-medium">
+                        Subscription cancelled. Access continues until {nextBillingInfo.expires || 'end of period'}
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleReactivateSubscription}
+                      disabled={actionLoading === 'reactivate'}
+                      className="w-full py-2 px-4 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      {actionLoading === 'reactivate' ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <>
+                          <CheckCircle className="h-4 w-4" />
+                          Reactivate Subscription
+                        </>
+                      )}
+                    </button>
+                  </div>
+                ) : subscription.subscription.plan_type !== 'trial' ? (
                   <button
                     onClick={() => setShowCancelModal(true)}
                     className="w-full py-2 px-4 text-red-600 border border-red-200 rounded-lg hover:bg-red-50 transition-colors text-sm font-medium"
                   >
                     Cancel Subscription
                   </button>
-                </div>
-              )}
-
-              {subscription.subscription.status === 'cancelled' && (
-                <div className="pt-4 border-t border-gray-200">
-                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-                    <p className="text-yellow-800 text-sm font-medium">
-                      Subscription cancelled. Access ends on {nextBillingInfo.expires || 'N/A'}
-                    </p>
-                  </div>
-                </div>
-              )}
+                ) : null}
+              </div>
             </div>
           ) : (
             <div className="text-center py-8">
@@ -609,6 +667,104 @@ const BillingPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Plan Features - Removed Progress Bars */}
+      <div className="bg-white rounded-2xl p-6 border border-gray-200">
+        <div className="flex items-center gap-3 mb-6">
+          <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
+            <TrendingUp className="h-6 w-6 text-yellow-600" />
+          </div>
+          <div>
+            <h3 className="text-lg font-semibold text-gray-900">Plan Features</h3>
+            <p className="text-sm text-gray-600">Available features in your current plan</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Customers</span>
+              <span className="text-sm font-medium text-gray-900">
+                {subscription?.features?.maxCustomers === -1 ? 'Unlimited' : `${subscription?.features?.maxCustomers || 100} max`}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Branches</span>
+              <span className="text-sm font-medium text-gray-900">
+                {subscription?.features?.maxBranches === -1 ? 'Unlimited' : `${subscription?.features?.maxBranches || 1} max`}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Multi-Branch Support</span>
+              <span className={`text-sm font-medium ${subscription?.features?.maxBranches > 1 ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.features?.maxBranches > 1 ? 'Included' : 'Not Available'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">Custom Branding</span>
+              <span className={`font-semibold ${subscription?.features?.customBranding ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.features?.customBranding ? 'Included' : 'Not Available'}
+              </span>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Advanced Analytics</span>
+              <span className={`text-sm font-medium ${subscription?.features?.advancedAnalytics ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.features?.advancedAnalytics ? 'Included' : 'Not Available'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">Priority Support</span>
+              <span className={`text-sm font-medium ${subscription?.features?.prioritySupport ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.features?.prioritySupport ? 'Included' : 'Not Available'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-sm text-gray-600">API Access</span>
+              <span className={`text-sm font-medium ${subscription?.features?.apiAccess ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.features?.apiAccess ? 'Included' : 'Not Available'}
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between">
+              <span className="text-gray-600">White-Label Solution</span>
+              <span className={`font-semibold ${subscription?.subscription?.plan_type === 'annual' ? 'text-green-600' : 'text-gray-400'}`}>
+                {subscription?.subscription?.plan_type === 'annual' ? 'Included' : 'Not Available'}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {subscription?.subscription?.plan_type === 'trial' && (
+          <div className="mt-6 p-4 bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-xl">
+            <div className="flex items-center gap-3">
+              <Clock className="h-5 w-5 text-yellow-600" />
+              <div>
+                <p className="font-medium text-yellow-900">Trial Period</p>
+                <p className="text-sm text-yellow-700">
+                  {subscription.daysRemaining > 0 
+                    ? `${subscription.daysRemaining} days remaining in your free trial`
+                    : 'Your trial has expired'
+                  }
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => window.location.href = '/upgrade'}
+              className="mt-3 w-full py-2 px-4 bg-gradient-to-r from-[#E6A85C] via-[#E85A9B] to-[#D946EF] text-white rounded-lg hover:shadow-lg transition-all duration-200 font-medium"
+            >
+              Upgrade Now
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Billing History */}
       <div className="bg-white rounded-2xl p-6 border border-gray-200">
         <div className="flex items-center justify-between mb-6">
@@ -674,105 +830,6 @@ const BillingPage: React.FC = () => {
         )}
       </div>
 
-      {/* Usage & Limits */}
-      <div className="bg-white rounded-2xl p-6 border border-gray-200">
-        <div className="flex items-center gap-3 mb-6">
-          <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
-            <TrendingUp className="h-6 w-6 text-yellow-600" />
-          </div>
-          <div>
-            <h3 className="text-lg font-semibold text-gray-900">Plan Features</h3>
-            <p className="text-sm text-gray-600">Available features in your current plan</p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Customers</span>
-              <span className="text-sm font-medium text-gray-900">
-                {subscription?.features?.maxCustomers === -1 ? 'Unlimited' : `${subscription?.features?.maxCustomers || 100} max`}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Branches</span>
-              <span className="text-sm font-medium text-gray-900">
-                {subscription?.features?.maxBranches === -1 ? 'Unlimited' : `${subscription?.features?.maxBranches || 1} max`}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Multi-Branch Support</span>
-              <span className={`text-sm font-medium ${subscription?.features?.maxBranches > 1 ? 'text-green-600' : 'text-gray-400'}`}>
-                {subscription?.features?.maxBranches > 1 ? 'Included' : 'Not Available'}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-gray-600">Custom Branding</span>
-              <span className={`font-semibold ${subscription?.features?.customBranding ? 'text-green-600' : 'text-gray-400'}`}>
-                {subscription?.features?.customBranding ? 'Included' : 'Not Available'}
-              </span>
-            </div>
-          </div>
-
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Advanced Analytics</span>
-              <span className={`text-sm font-medium ${subscription?.features?.advancedAnalytics ? 'text-green-600' : 'text-gray-400'}`}>
-                {subscription?.features?.advancedAnalytics ? 'Included' : 'Not Available'}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">Priority Support</span>
-              <span className={`text-sm font-medium ${subscription?.features?.prioritySupport ? 'text-green-600' : 'text-gray-400'}`}>
-                {subscription?.features?.prioritySupport ? 'Included' : 'Not Available'}
-              </span>
-            </div>
-
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-600">API Access</span>
-              <span className={`text-sm font-medium ${subscription?.features?.apiAccess ? 'text-green-600' : 'text-gray-400'}`}>
-                {subscription?.features?.apiAccess ? 'Included' : 'Not Available'}
-              </span>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-gray-600">White-Label Solution</span>
-              <span className={`font-semibold ${subscription?.subscription?.plan_type === 'annual' ? 'text-green-600' : 'text-gray-400'}`}>
-                {subscription?.subscription?.plan_type === 'annual' ? 'Included' : 'Not Available'}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {subscription?.subscription?.plan_type === 'trial' && (
-          <div className="mt-6 p-4 bg-gradient-to-r from-yellow-50 to-orange-50 border border-yellow-200 rounded-xl">
-            <div className="flex items-center gap-3">
-              <Clock className="h-5 w-5 text-yellow-600" />
-              <div>
-                <p className="font-medium text-yellow-900">Trial Period</p>
-                <p className="text-sm text-yellow-700">
-                  {subscription.daysRemaining > 0 
-                    ? `${subscription.daysRemaining} days remaining in your free trial`
-                    : 'Your trial has expired'
-                  }
-                </p>
-              </div>
-            </div>
-            <button
-              onClick={() => window.location.href = '/upgrade'}
-              className="mt-3 w-full py-2 px-4 bg-gradient-to-r from-[#E6A85C] via-[#E85A9B] to-[#D946EF] text-white rounded-lg hover:shadow-lg transition-all duration-200 font-medium"
-            >
-              Upgrade Now
-            </button>
-          </div>
-        )}
-      </div>
-
       {/* Cancel Subscription Modal */}
       {showCancelModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
@@ -788,20 +845,14 @@ const BillingPage: React.FC = () => {
             </div>
 
             <div className="space-y-4">
-              <div className="bg-red-50 border border-red-200 rounded-xl p-4">
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
                 <div className="flex items-start gap-3">
-                  <AlertCircle className="h-5 w-5 text-red-600 mt-0.5" />
+                  <CheckCircle className="h-5 w-5 text-blue-600 mt-0.5" />
                   <div>
-                    <p className="font-medium text-red-900 mb-1">Are you sure?</p>
-                    <p className="text-red-700 text-sm">
-                      Cancelling your subscription will:
+                    <p className="font-medium text-blue-900 mb-1">Graceful Cancellation</p>
+                    <p className="text-blue-700 text-sm">
+                      Your subscription will be cancelled but you'll keep access until {nextBillingInfo.expires || 'the end of your billing period'}. You can reactivate anytime without additional charges.
                     </p>
-                    <ul className="text-red-700 text-sm mt-2 space-y-1 list-disc list-inside">
-                      <li>End access to premium features after your billing period</li>
-                      <li>Stop automatic billing</li>
-                      <li>Limit customer capacity to 100</li>
-                      <li>Remove advanced analytics and reporting</li>
-                    </ul>
                   </div>
                 </div>
               </div>
@@ -813,15 +864,11 @@ const BillingPage: React.FC = () => {
                 <textarea
                   value={cancelReason}
                   onChange={(e) => setCancelReason(e.target.value)}
-                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-transparent"
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   placeholder="Help us improve by telling us why you're cancelling..."
                   rows={3}
                 />
               </div>
-
-              <p className="text-gray-600 text-sm">
-                Your subscription will remain active until {nextBillingInfo.expires || 'the end of your billing period'}.
-              </p>
             </div>
 
             <div className="flex gap-3 mt-6">
@@ -876,9 +923,9 @@ const BillingPage: React.FC = () => {
 
               <div className="text-center py-8">
                 <CreditCard className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                <p className="text-gray-500 mb-4">Payment method setup would appear here</p>
+                <p className="text-gray-500 mb-4">Add a new payment method</p>
                 <p className="text-sm text-gray-400">
-                  In production, this would integrate with Stripe Elements
+                  This will create a secure setup with Stripe
                 </p>
               </div>
             </div>
