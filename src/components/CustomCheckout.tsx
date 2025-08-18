@@ -120,15 +120,16 @@ if (confirmError) {
       // Payment successful
       onSuccess();
       
-      // Trigger subscription update events
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('subscription-updated'));
-      }, 1000);
+      // Trigger subscription update events with proper timing
+      window.dispatchEvent(new CustomEvent('subscription-updated'));
       
-      // Additional refresh for dashboard
       setTimeout(() => {
         window.dispatchEvent(new CustomEvent('subscription-updated'));
-      }, 2000);
+      }, 500);
+      
+      setTimeout(() => {
+        window.dispatchEvent(new CustomEvent('subscription-updated'));
+      }, 1500);
 
     } catch (err: any) {
       console.error('Payment error:', err);

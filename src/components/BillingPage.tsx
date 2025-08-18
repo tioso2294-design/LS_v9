@@ -6,10 +6,7 @@ import {
   Receipt, FileText, Bell, X, Loader2, Star, Check
 } from 'lucide-react';
 import { SubscriptionService } from '../services/subscriptionService';
-import { loadStripe } from '@stripe/stripe-js';
 import { useAuth } from '../contexts/AuthContext';
-
-const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLISHABLE_KEY || '');
 
 interface PaymentMethod {
   id: string;
@@ -41,9 +38,7 @@ const BillingPage: React.FC = () => {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [showCancelModal, setShowCancelModal] = useState(false);
-  const [showAddPaymentModal, setShowAddPaymentModal] = useState(false);
   const [cancelReason, setCancelReason] = useState('');
-  const [addingPaymentMethod, setAddingPaymentMethod] = useState(false);
   
   const { user } = useAuth();
 
@@ -55,10 +50,12 @@ const BillingPage: React.FC = () => {
       const subscriptionData = await SubscriptionService.checkSubscriptionAccess(user.id);
       setSubscription(subscriptionData);
       
-      // Load payment methods if we have a Stripe customer
+      // Load payment methods and invoices if we have a Stripe customer
       if (subscriptionData?.subscription?.stripe_customer_id) {
-        await loadPaymentMethods(subscriptionData.subscription.stripe_customer_id);
-        await loadInvoices(subscriptionData.subscription);
+        await Promise.all([
+          loadPaymentMethods(subscriptionData.subscription.stripe_customer_id),
+          loadInvoices(subscriptionData.subscription)
+        ]);
       }
     } catch (error) {
       console.error('Error fetching subscription:', error);
@@ -127,27 +124,12 @@ const BillingPage: React.FC = () => {
   }, []);
 
   const handleCancelSubscription = async () => {
-    if (!subscription?.subscription?.id || !user) return;
+    if (!user) return;
 
     try {
       setActionLoading('cancel');
       
-      // Call the graceful cancellation function
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/cancel-subscription`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userId: user.id,
-          reason: cancelReason
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to cancel subscription');
-      }
+      await SubscriptionService.cancelSubscription(user.id);
       
       // Refresh subscription data
       await fetchSubscriptionData();
@@ -167,18 +149,7 @@ const BillingPage: React.FC = () => {
     try {
       setActionLoading('reactivate');
       
-      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/reactivate-subscription`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ userId: user.id })
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to reactivate subscription');
-      }
+      await SubscriptionService.reactivateSubscription(user.id);
       
       await fetchSubscriptionData();
       
@@ -215,18 +186,12 @@ const BillingPage: React.FC = () => {
 
       const { setupIntent } = await response.json();
       
-      // In production, you would redirect to Stripe's hosted setup page or use Elements
-      const stripe = await stripePromise;
-      if (stripe && setupIntent.client_secret) {
-        const { error } = await stripe.confirmCardSetup(setupIntent.client_secret);
-        if (error) {
-          throw new Error(error.message);
-        }
-      }
+      // In a real implementation, you would redirect to Stripe's hosted setup page
+      // For now, we'll simulate success
+      alert('Payment method setup initiated. In production, this would redirect to Stripe.');
       
       // Refresh payment methods
       await loadPaymentMethods(subscription.subscription.stripe_customer_id);
-      setShowAddPaymentModal(false);
       
     } catch (err: any) {
       setError(err.message || 'Failed to add payment method');
@@ -337,75 +302,49 @@ const BillingPage: React.FC = () => {
   const getNextBillingInfo = () => {
     if (!subscription?.subscription) return { text: 'N/A', isOneTime: false };
     
-    const plan = subscription.subscription.plan_type;
-    const endDate = subscription.subscription.current_period_end;
     const startDate = subscription.subscription.current_period_start;
+    const endDate = subscription.subscription.current_period_end;
     
-    // Calculate actual duration
-    if (startDate && endDate) {
-      const startTime = new Date(startDate).getTime();
-      const endTime = new Date(endDate).getTime();
-      const durationDays = Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24));
-      
-      if (durationDays >= 350) {
-        return { 
-          text: 'One-time payment (1 year)', 
-          isOneTime: true,
-          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
-          isExpired: endDate ? new Date(endDate) < new Date() : false
-        };
-      } else if (durationDays >= 150) {
-        return { 
-          text: 'One-time payment (6 months)', 
-          isOneTime: true,
-          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
-          isExpired: endDate ? new Date(endDate) < new Date() : false
-        };
-      } else if (durationDays >= 25) {
-        return { 
-          text: endDate ? new Date(endDate).toLocaleDateString() : 'N/A', 
-          isOneTime: false,
-          isExpired: endDate ? new Date(endDate) < new Date() : false
-        };
-      }
-    }
+    if (!startDate || !endDate) return { text: 'N/A', isOneTime: false };
     
-    // Fallback to plan type
-    switch (plan) {
-      case 'annual':
-        return { 
-          text: 'One-time payment (1 year)', 
-          isOneTime: true,
-          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
-          isExpired: endDate ? new Date(endDate) < new Date() : false
-        };
-      case 'semiannual':
-        return { 
-          text: 'One-time payment (6 months)', 
-          isOneTime: true,
-          expires: endDate ? new Date(endDate).toLocaleDateString() : 'N/A',
-          isExpired: endDate ? new Date(endDate) < new Date() : false
-        };
-      case 'monthly':
-        return { 
-          text: endDate ? new Date(endDate).toLocaleDateString() : 'N/A', 
-          isOneTime: false,
-          isExpired: endDate ? new Date(endDate) < new Date() : false
-        };
-      case 'trial':
-        return { 
-          text: endDate ? new Date(endDate).toLocaleDateString() : 'N/A', 
-          isOneTime: false,
-          isExpired: endDate ? new Date(endDate) < new Date() : false
-        };
-      default:
-        return { text: 'N/A', isOneTime: false, isExpired: false };
+    // Calculate actual duration in days
+    const startTime = new Date(startDate).getTime();
+    const endTime = new Date(endDate).getTime();
+    const durationDays = Math.ceil((endTime - startTime) / (1000 * 60 * 60 * 24));
+    
+    // Determine if it's a one-time payment based on actual duration
+    if (durationDays >= 350) {
+      return { 
+        text: 'One-time payment (1 year)', 
+        isOneTime: true,
+        expires: new Date(endDate).toLocaleDateString(),
+        isExpired: new Date(endDate) < new Date()
+      };
+    } else if (durationDays >= 150) {
+      return { 
+        text: 'One-time payment (6 months)', 
+        isOneTime: true,
+        expires: new Date(endDate).toLocaleDateString(),
+        isExpired: new Date(endDate) < new Date()
+      };
+    } else {
+      return { 
+        text: new Date(endDate).toLocaleDateString(), 
+        isOneTime: false,
+        isExpired: new Date(endDate) < new Date()
+      };
     }
   };
 
   const getBillingPeriodText = () => {
     if (!subscription?.subscription) return 'N/A';
     
+    // Use the billing_period_text from database if available
+    if (subscription.subscription.billing_period_text) {
+      return subscription.subscription.billing_period_text;
+    }
+    
+    // Fallback calculation
     const startDate = subscription.subscription.current_period_start;
     const endDate = subscription.subscription.current_period_end;
     
@@ -427,7 +366,7 @@ const BillingPage: React.FC = () => {
     } else if (durationDays >= 25) {
       periodLabel = '1 month';
     } else {
-      periodLabel = 'trial';
+      periodLabel = `${durationDays} days`;
     }
     
     return `${start} - ${end} (${periodLabel})`;
@@ -594,10 +533,15 @@ const BillingPage: React.FC = () => {
               </div>
             </div>
             <button
-              onClick={() => setShowAddPaymentModal(true)}
-              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors"
+              onClick={handleAddPaymentMethod}
+              disabled={actionLoading === 'add-payment'}
+              className="p-2 text-gray-600 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
             >
-              <Plus className="h-5 w-5" />
+              {actionLoading === 'add-payment' ? (
+                <Loader2 className="h-5 w-5 animate-spin" />
+              ) : (
+                <Plus className="h-5 w-5" />
+              )}
             </button>
           </div>
 
@@ -606,10 +550,18 @@ const BillingPage: React.FC = () => {
               <CreditCard className="h-12 w-12 text-gray-300 mx-auto mb-4" />
               <p className="text-gray-500 mb-4">No payment methods added</p>
               <button
-                onClick={() => setShowAddPaymentModal(true)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+                onClick={handleAddPaymentMethod}
+                disabled={actionLoading === 'add-payment'}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2 mx-auto"
               >
-                Add Payment Method
+                {actionLoading === 'add-payment' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <>
+                    <Plus className="h-4 w-4" />
+                    Add Payment Method
+                  </>
+                )}
               </button>
             </div>
           ) : (
@@ -667,7 +619,7 @@ const BillingPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Plan Features - Removed Progress Bars */}
+      {/* Plan Features - No Progress Bars */}
       <div className="bg-white rounded-2xl p-6 border border-gray-200">
         <div className="flex items-center gap-3 mb-6">
           <div className="w-12 h-12 bg-yellow-100 rounded-xl flex items-center justify-center">
@@ -887,68 +839,6 @@ const BillingPage: React.FC = () => {
                   <Loader2 className="h-4 w-4 animate-spin" />
                 ) : (
                   'Cancel Subscription'
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add Payment Method Modal */}
-      {showAddPaymentModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="bg-white rounded-2xl p-6 max-w-md w-full">
-            <div className="flex items-center justify-between mb-6">
-              <h3 className="text-lg font-bold text-gray-900">Add Payment Method</h3>
-              <button
-                onClick={() => setShowAddPaymentModal(false)}
-                className="p-2 text-gray-400 hover:text-gray-600 rounded-lg hover:bg-gray-100"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="space-y-4">
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4">
-                <div className="flex items-center gap-3">
-                  <Shield className="h-5 w-5 text-blue-600" />
-                  <div>
-                    <p className="text-sm font-medium text-blue-900">Secure Payment</p>
-                    <p className="text-xs text-blue-700">
-                      Your payment information is secured by Stripe
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              <div className="text-center py-8">
-                <CreditCard className="h-12 w-12 text-gray-300 mx-auto mb-4" />
-                <p className="text-gray-500 mb-4">Add a new payment method</p>
-                <p className="text-sm text-gray-400">
-                  This will create a secure setup with Stripe
-                </p>
-              </div>
-            </div>
-
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => setShowAddPaymentModal(false)}
-                className="flex-1 py-3 px-4 border border-gray-200 text-gray-700 rounded-xl hover:bg-gray-50 transition-colors"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleAddPaymentMethod}
-                disabled={actionLoading === 'add-payment'}
-                className="flex-1 py-3 px-4 bg-blue-600 text-white rounded-xl hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
-              >
-                {actionLoading === 'add-payment' ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <>
-                    <Plus className="h-4 w-4" />
-                    Add Payment Method
-                  </>
                 )}
               </button>
             </div>

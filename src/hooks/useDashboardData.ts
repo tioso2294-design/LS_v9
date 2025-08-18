@@ -82,13 +82,14 @@ export const useDashboardData = (timeRange: string = '7d') => {
   const [error, setError] = useState<string | null>(null);
   const { user, restaurant } = useAuth();
 
+  // Track last fetch time for intelligent caching
+  const [lastFetchTime, setLastFetchTime] = useState<number>(0);
+  const CACHE_DURATION = 15 * 60 * 1000; // 15 minutes
+
   // Check if we should use cached data
   const shouldUseCachedData = (cacheKey: string) => {
-    const cached = dataCache.get(cacheKey);
-    if (!cached) return false;
-    
     const now = Date.now();
-    return (now - cached.timestamp) < CACHE_DURATION;
+    return (now - lastFetchTime) < CACHE_DURATION;
   };
 
   // Store data in cache
@@ -345,28 +346,17 @@ export const useDashboardData = (timeRange: string = '7d') => {
   const fetchDashboardData = useCallback(async () => {
     if (!user) return;
     
-    const cacheKey = `dashboard-${restaurant?.id || 'no-restaurant'}-${timeRange}`;
-    
-    // Check if we should use cached data
-    if (shouldUseCachedData(cacheKey)) {
-      const cachedData = getCachedData(cacheKey);
-      if (cachedData) {
-        setStats(cachedData.stats);
-        setRecentActivity(cachedData.recentActivity);
-        setCustomerGrowthData(cachedData.customerGrowthData);
-        setRewardDistribution(cachedData.rewardDistribution);
-        setWeeklyActivity(cachedData.weeklyActivity);
-        setLoyaltyROI(cachedData.loyaltyROI);
-        setMonthlyTrends(cachedData.monthlyTrends);
-        setNotifications(cachedData.notifications);
-        setLoading(false);
-        return;
-      }
+    // Check if we should skip fetch due to recent data
+    if (shouldUseCachedData()) {
+      console.log('📊 Using cached dashboard data');
+      setLoading(false);
+      return;
     }
     
     try {
       setLoading(true);
       setError(null);
+      setLastFetchTime(Date.now());
 
       // If no restaurant, show empty state
       if (!restaurant) {
