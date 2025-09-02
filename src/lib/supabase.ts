@@ -1,14 +1,41 @@
 import { createClient } from '@supabase/supabase-js';
 
+// Debug environment variables
+console.log('🔍 Environment Check:', {
+  url: import.meta.env.VITE_SUPABASE_URL ? 'Set' : 'Missing',
+  key: import.meta.env.VITE_SUPABASE_ANON_KEY ? 'Set' : 'Missing',
+  urlValue: import.meta.env.VITE_SUPABASE_URL?.substring(0, 30) + '...',
+  keyValue: import.meta.env.VITE_SUPABASE_ANON_KEY?.substring(0, 20) + '...'
+});
+
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 if (!supabaseUrl || !supabaseAnonKey) {
-  throw new Error('Missing Supabase environment variables');
+  console.error('❌ Missing Supabase environment variables:', {
+    VITE_SUPABASE_URL: supabaseUrl ? 'Present' : 'Missing',
+    VITE_SUPABASE_ANON_KEY: supabaseAnonKey ? 'Present' : 'Missing'
+  });
+  throw new Error(`Missing Supabase environment variables. Please check your .env file.
+    Required: VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY
+    Current URL: ${supabaseUrl || 'undefined'}
+    Current Key: ${supabaseAnonKey ? 'Set' : 'undefined'}`);
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+console.log('✅ Creating Supabase client with URL:', supabaseUrl);
 
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: true
+  },
+  global: {
+    headers: {
+      'X-Client-Info': 'voya-loyalty-app'
+    }
+  }
+});
 // Database types
 export interface Database {
   public: {
